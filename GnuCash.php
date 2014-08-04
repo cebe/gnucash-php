@@ -377,6 +377,7 @@ class GnuCash
 			foreach($book->accounts as $account) {
 				if (!$account->isRoot()) {
 					if (isset($book->accounts[$account->parent])) {
+						$book->accounts[$account->parent]->children[$account->id] = $account;
 						$account->parent = $book->accounts[$account->parent];
 					} else {
 						throw new \Exception('Account not found: ' . $account->parent);

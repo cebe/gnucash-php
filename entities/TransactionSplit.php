@@ -19,13 +19,20 @@ class TransactionSplit
 	public $memo;
 	public $action;
 
-	protected $transaction;
+	private $_transaction;
 
 	public function __construct($transaction)
 	{
-		$this->transaction = $transaction;
+		$this->_transaction = $transaction;
 	}
 
+	/**
+	 * @return Transaction
+	 */
+	public function getTransaction()
+	{
+		return $this->_transaction;
+	}
 
 	/*  <trn:splits>
     <trn:split>

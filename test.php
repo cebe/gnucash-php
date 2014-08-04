@@ -26,6 +26,6 @@ foreach($gnucash->books as $book) {
 		if ($account->isRoot()) {
 			continue;
 		}
-		echo $account->name . ': ' . $f->format($account->getAmount()) . "\n";
+		echo $account->type . ' ' . $account->name . ': ' . $f->format($account->getAmount()) . "\n";
 	}
 }
