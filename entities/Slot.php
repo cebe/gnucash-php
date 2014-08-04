@@ -5,7 +5,7 @@
  * @author Carsten Brandt <mail@cebe.cc>
  */
 
-namespace cebe\gnucash;
+namespace cebe\gnucash\entities;
 
 
 class Slot

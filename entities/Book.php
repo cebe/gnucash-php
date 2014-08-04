@@ -5,7 +5,7 @@
  * @author Carsten Brandt <mail@cebe.cc>
  */
 
-namespace cebe\gnucash;
+namespace cebe\gnucash\entities;
 
 
 class Book
@@ -14,6 +14,7 @@ class Book
 
 	public $slots = [];
 	public $accounts = [];
+	public $transactions = [];
 
 
 } 

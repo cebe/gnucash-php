@@ -7,86 +7,49 @@
 
 namespace cebe\gnucash;
 
-
-use SimpleXMLElement;
-use yii\db\Exception;
+use cebe\gnucash\entities\Account;
+use cebe\gnucash\entities\Book;
+use cebe\gnucash\entities\Slot;
+use cebe\gnucash\entities\Transaction;
 
 class GnuCash
 {
+	public $books = [];
+
+	private $_file;
+
 	public function __construct($xmlFile)
 	{
-		$xmlContent = implode("", gzfile($xmlFile));
-		$this->parseXml($xmlContent);
+		$this->_file = $xmlFile;
+		$this->parseXml($xmlFile);
 	}
 
-	protected function parseXml($xmlContent)
+	protected function parseXml($xmlFile)
 	{
-//		print_r($xmlContent);
-//		//$xml = new SimpleXMLElement($xmlContent);
-//		libxml_use_internal_errors(true);
-//		$xml = simplexml_load_string($xmlContent);
-//		if (!$xml) {
-//		    echo "Laden des XML fehlgeschlagen\n";
-//		    foreach(libxml_get_errors() as $error) {
-//		        echo "\t", $error->message;
-//		    }
-//		}
-//		//$xml->children('book')
-//
-//		/** @var $element SimpleXMLElement */
-//		foreach($xml as $element) {
-//			print_r($element->getName());
-//
-//		}
-//		return;
-
-
 		$parser = xml_parser_create('');
 
 		xml_parser_set_option($parser, XML_OPTION_TARGET_ENCODING, "UTF-8");
 	    xml_parser_set_option($parser, XML_OPTION_CASE_FOLDING, 0);
 	    xml_parser_set_option($parser, XML_OPTION_SKIP_WHITE, 1);
 
-	    if (!xml_parse_into_struct($parser, trim($xmlContent), $elements)) {
+	    if (!xml_parse_into_struct($parser, implode("", gzfile($xmlFile)), $elements)) {
 		    xml_parser_free($parser);
 		    throw new \Exception("failed to parse XML");
 	    }
 	    xml_parser_free($parser);
 
-//		print_r($xmlValues);
-
-//	    $xml_array = array ();
-//	    $parents = array ();
-//	    $opened_tags = array ();
-//	    $arr = array ();
-//	    $current = & $xml_array;
-//	    $repeated_tag_index = array ();
 	    while($element = array_shift($elements)) {
-		    if ($element['type'] === 'open' && $element['level'] == 1 && $element['tag'] === 'gnc-v2') {
-
-			    print_r($element);
+		    if ($element['type'] === 'open' && $element['tag'] === 'gnc-v2') {
 			    $this->parseGNCv2($elements);
-			    $this->parseCloseTag($elements);
-
+			    return;
 		    } else {
-			    throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+			    throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 		    }
-
 	    }
-
-
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
-	protected function parseCloseTag(&$elements)
-	{
-		if ($element = array_shift($elements)) {
-			if ($element['type'] === 'close') {
-				return;
-			}
-		}
-		throw new \Exception('expected close tag but got: ' . print_r($element, true));
-	}
-
+	// TODO temporary method to skip some parts of XML currently not needed
 	protected function skipTag(&$elements, $tag, $level)
 	{
 		while ($element = array_shift($elements)) {
@@ -94,113 +57,135 @@ class GnuCash
 				return;
 			}
 		}
-		throw new \Exception('expected close tag but got: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
-
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @throws \Exception
+	 */
 	protected function parseGNCv2(&$elements)
 	{
 
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'complete' && $element['tag'] === 'gnc:count-data') {
 			// TODO <gnc:count-data cd:type="book">1</gnc:count-data>
 
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:book') {
 				if ($element['attributes']['version'] == '2.0.0') {
-					$this->parseBook($elements);
-//					$this->parseCloseTag($elements);
+					$book = $this->parseBook($elements);
+					$this->books[$book->id] = $book;
 				} else {
-					throw new \Exception('unsupported version');
+					throw new \Exception('Unsupported document version. Only 2.0.0 is supported.');
 				}
+			} elseif ($element['type'] === 'close') {
+				return;
 			} else {
-				throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return Book
+	 * @throws \Exception
+	 */
 	protected function parseBook(&$elements)
 	{
 		$book = new Book();
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'complete' && $element['tag'] === 'book:id') {
 				$book->id = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'gnc:count-data') {
+				// $book->id = $element['value']; // TODO
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'book:slots') {
 				$book->slots = $this->parseSlots($elements);
-//				$this->parseCloseTag($elements);
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:commodity') {
 				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:GncCustomer') {
+				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:GncInvoice') {
+				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:GncTaxTable') {
+				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:account') {
-				$account = $this->parseAccount($elements);
+				$account = $this->parseAccount($elements, $book);
 				$book->accounts[$account->id] = $account;
-//				$this->parseCloseTag($elements);
+			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:transaction') {
+				$transaction = $this->parseTransaction($elements, $book);
+				$book->transactions[$transaction->id] = $transaction;
 			} elseif ($element['type'] === 'close') {
 				return $book;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return Slot[]
+	 * @throws \Exception
+	 */
 	protected function parseSlots(&$elements)
 	{
 		$slots = [];
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'open' && $element['tag'] === 'slot') {
 				$slots[] = $this->parseSlot($elements);
-//				$this->parseCloseTag($elements);
 			} elseif ($element['type'] === 'close') {
 				return $slots;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return Slot
+	 * @throws \Exception
+	 */
 	protected function parseSlot(&$elements)
 	{
 		$slot = new Slot();
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'complete' && $element['tag'] === 'slot:key') {
 				$slot->key = $element['value'];
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'slot:value' && $element['attributes']['type'] === 'frame') {
 				$slot->value = $this->parseSlots($elements);
-//				$this->parseCloseTag($elements);
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'slot:value') {
 				$slot->value = $element['value'];
 			} elseif ($element['type'] === 'close') {
 				return $slot;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
-//	protected function parseSlotValue(&$elements)
-//	{
-//		while($element = array_shift($elements)) {
-//			print_r($element);
-//			if ($element['type'] === 'complete' && $element['tag'] === 'slot:key') {
-////				$slot->key = $element['value'];
-//			} elseif ($element['type'] === 'open' && $element['tag'] === 'slot:value') {
-////				$slot->value = $element['value'];
-//			} else {
-//				throw new \Exception('unexpected xml tag: ' . print_r($element, true));
-//			}
-//		}
-//	}
-
-	protected function parseAccount(&$elements)
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return Account
+	 * @throws \Exception
+	 */
+	protected function parseAccount(&$elements, $book)
 	{
-		$account = new Account();
+		$account = new Account($book);
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'complete' && $element['tag'] === 'act:name') {
 				$account->name = $element['value'];
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:id') { // TODO check type="guid"
 				$account->id = $element['value'];
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:type') {
 				$account->type = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:code') {
+				$account->code = $element['value'];
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'act:commodity') {
 				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:commodity-scu') {
@@ -215,16 +200,22 @@ class GnuCash
 				$account->parent = $element['value'];
 			} elseif ($element['type'] === 'close') {
 				return $account;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
-	protected function parseTransaction(&$elements)
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return Transaction
+	 * @throws \Exception
+	 */
+	protected function parseTransaction(&$elements, $book)
 	{
-		$transaction = new Transaction();
+		$transaction = new Transaction($book);
 		while($element = array_shift($elements)) {
-			print_r($element);
 			if ($element['type'] === 'complete' && $element['tag'] === 'trn:id') { // TODO check type="guid"
 				$transaction->id = $element['value'];
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'trn:num') {
@@ -243,11 +234,18 @@ class GnuCash
 				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
 			} elseif ($element['type'] === 'close') {
 				return $transaction;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
 
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return string
+	 * @throws \Exception
+	 */
 	protected function parseDate(&$elements)
 	{
 		$date = null;
@@ -256,57 +254,10 @@ class GnuCash
 				$date = $element['value'];
 			} elseif ($element['type'] === 'close') {
 				return $date;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
 		}
-		throw new \Exception('unexpected xml tag: ' . print_r($element, true));
+		throw new \Exception('Unexpected end of xml file.');
 	}
-
-	/*<gnc:transaction version="2.0.0">
-	  <trn:id type="guid">d041066415b3230b4411a074cc2a03fa</trn:id>
-	  <trn:currency>
-	    <cmdty:space>ISO4217</cmdty:space>
-	    <cmdty:id>EUR</cmdty:id>
-	  </trn:currency>
-	  <trn:num>12</trn:num>
-	  <trn:date-posted>
-	    <ts:date>2013-04-29 00:00:00 +0200</ts:date>
-	  </trn:date-posted>
-	  <trn:date-entered>
-	    <ts:date>2013-09-03 10:08:04 +0200</ts:date>
-	  </trn:date-entered>
-	  <trn:description>Lastschrift Domainoffensive SSL</trn:description>
-	  <trn:slots>
-	    <slot>
-	      <slot:key>date-posted</slot:key>
-	      <slot:value type="gdate">
-	        <gdate>2013-04-29</gdate>
-	      </slot:value>
-	    </slot>
-	  </trn:slots>
-	  <trn:splits>
-	    <trn:split>
-	      <split:id type="guid">e853ee9927ffd95282d390d850a7f53e</split:id>
-	      <split:reconciled-state>c</split:reconciled-state>
-	      <split:value>16723/100</split:value>
-	      <split:quantity>16723/100</split:quantity>
-	      <split:account type="guid">136aca0305ac1deafccdbdd3ca4e5d04</split:account>
-	    </trn:split>
-	    <trn:split>
-	      <split:id type="guid">9b09a7af304a88c390f269e6041ca5ac</split:id>
-	      <split:reconciled-state>n</split:reconciled-state>
-	      <split:value>3177/100</split:value>
-	      <split:quantity>3177/100</split:quantity>
-	      <split:account type="guid">a1142a03151b1d1bc97b743b50ce4e8b</split:account>
-	    </trn:split>
-	    <trn:split>
-	      <split:id type="guid">e8a7879e004926c161bcad895d0d64be</split:id>
-	      <split:reconciled-state>c</split:reconciled-state>
-	      <split:value>-19900/100</split:value>
-	      <split:quantity>-19900/100</split:quantity>
-	      <split:account type="guid">8cf3fe2596b95333b441acde26a6cd32</split:account>
-	    </trn:split>
-	  </trn:splits>
-	</gnc:transaction>*/
-
-
 }
