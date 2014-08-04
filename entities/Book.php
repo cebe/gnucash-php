@@ -12,9 +12,18 @@ class Book
 {
 	public $id;
 
-	public $slots = [];
-	public $accounts = [];
-	public $transactions = [];
+	/**
+	 * @var Slot[]
+	 */
+	public $slots = array();
+	/**
+	 * @var Account[]
+	 */
+	public $accounts = array();
+	/**
+	 * @var Transaction[]
+	 */
+	public $transactions = array();
 
 
 } 

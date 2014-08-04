@@ -11,19 +11,50 @@ use cebe\gnucash\entities\Account;
 use cebe\gnucash\entities\Book;
 use cebe\gnucash\entities\Slot;
 use cebe\gnucash\entities\Transaction;
+use cebe\gnucash\entities\TransactionSplit;
+use SebastianBergmann\Money\Currency;
+use SebastianBergmann\Money\Money;
 
 class GnuCash
 {
-	public $books = [];
+	/**
+	 * @var Book[]
+	 */
+	public $books = array();
+
+	private $_currencies = array();
 
 	private $_file;
 
 	public function __construct($xmlFile)
 	{
 		$this->_file = $xmlFile;
-		$this->parseXml($xmlFile);
+
+		$cacheFile = dirname($xmlFile) . DIRECTORY_SEPARATOR . '.' . basename($xmlFile) . '.cache';
+		$sha1 = sha1_file($xmlFile);
+		if (file_exists($cacheFile) && $data = unserialize(file_get_contents($cacheFile))) {
+			if ($sha1 === $data['sha1']) {
+				$this->books = $data['books'];
+				$this->postProcess();
+				return;
+			}
+		}
+
+		$this->books = $this->parseXml($xmlFile);
+
+		$data = array(
+			'sha1' => $sha1,
+			'books' => $this->books,
+		);
+		file_put_contents($cacheFile, serialize($data));
+		$this->postProcess();
 	}
 
+	/**
+	 * @param string $xmlFile
+	 * @return Book[]
+	 * @throws \Exception
+	 */
 	protected function parseXml($xmlFile)
 	{
 		$parser = xml_parser_create('');
@@ -40,8 +71,7 @@ class GnuCash
 
 	    while($element = array_shift($elements)) {
 		    if ($element['type'] === 'open' && $element['tag'] === 'gnc-v2') {
-			    $this->parseGNCv2($elements);
-			    return;
+			    return $this->parseGNCv2($elements);
 		    } else {
 			    throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 		    }
@@ -62,11 +92,12 @@ class GnuCash
 
 	/**
 	 * @param array $elements list of XML elements to parse.
+	 * @return Book[]
 	 * @throws \Exception
 	 */
 	protected function parseGNCv2(&$elements)
 	{
-
+		$books = array();
 		while($element = array_shift($elements)) {
 			if ($element['type'] === 'complete' && $element['tag'] === 'gnc:count-data') {
 			// TODO <gnc:count-data cd:type="book">1</gnc:count-data>
@@ -74,12 +105,12 @@ class GnuCash
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'gnc:book') {
 				if ($element['attributes']['version'] == '2.0.0') {
 					$book = $this->parseBook($elements);
-					$this->books[$book->id] = $book;
+					$books[$book->id] = $book;
 				} else {
 					throw new \Exception('Unsupported document version. Only 2.0.0 is supported.');
 				}
 			} elseif ($element['type'] === 'close') {
-				return;
+				return $books;
 			} else {
 				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
@@ -132,7 +163,7 @@ class GnuCash
 	 */
 	protected function parseSlots(&$elements)
 	{
-		$slots = [];
+		$slots = array();
 		while($element = array_shift($elements)) {
 			if ($element['type'] === 'open' && $element['tag'] === 'slot') {
 				$slots[] = $this->parseSlot($elements);
@@ -187,9 +218,9 @@ class GnuCash
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:code') {
 				$account->code = $element['value'];
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'act:commodity') {
-				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+				$account->commodity = $this->parseCurrency($elements);
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:commodity-scu') {
-				// TODO
+				$account->commodityScu = $element['value'];
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:non-standard-scu') {
 				// $account->type = $element['value'];
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'act:description') {
@@ -223,7 +254,7 @@ class GnuCash
 			} elseif ($element['type'] === 'complete' && $element['tag'] === 'trn:description') {
 				$transaction->description = $element['value'];
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'trn:currency') {
-				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+				$transaction->currency = $this->parseCurrency($elements);
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'trn:date-posted') {
 				$transaction->datePosted = $this->parseDate($elements);
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'trn:date-entered') {
@@ -231,9 +262,88 @@ class GnuCash
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'trn:slots') {
 				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
 			} elseif ($element['type'] === 'open' && $element['tag'] === 'trn:splits') {
-				$this->skipTag($elements, $element['tag'], $element['level']); // TODO
+				$transaction->splits = $this->parseTransactionSplits($elements, $transaction);
 			} elseif ($element['type'] === 'close') {
 				return $transaction;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
+			}
+		}
+		throw new \Exception('Unexpected end of xml file.');
+	}
+
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return string
+	 * @throws \Exception
+	 */
+	protected function parseCurrency(&$elements)
+	{
+		$currencyCode = null;
+		while($element = array_shift($elements)) {
+			if ($element['type'] === 'complete' && $element['tag'] === 'cmdty:space') {
+				if ($element['value'] !== 'ISO4217') {
+					throw new \Exception('Only ISO4217 currency codes are supported. Found a ' . $element['value'] . ' value.');
+				}
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'cmdty:id') {
+				$currencyCode = $element['value'];
+			} elseif ($element['type'] === 'close') {
+				return $currencyCode;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
+			}
+		}
+		throw new \Exception('Unexpected end of xml file.');
+	}
+
+
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return TransactionSplit[]
+	 * @throws \Exception
+	 */
+	protected function parseTransactionSplits(&$elements, $transaction)
+	{
+		$splits = array();
+		while($element = array_shift($elements)) {
+			if ($element['type'] === 'open' && $element['tag'] === 'trn:split') {
+				$splits[] = $this->parseTransactionSplit($elements, $transaction);
+			} elseif ($element['type'] === 'close') {
+				return $splits;
+			} else {
+				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
+			}
+		}
+		throw new \Exception('Unexpected end of xml file.');
+	}
+
+	/**
+	 * @param array $elements list of XML elements to parse.
+	 * @return TransactionSplit
+	 * @throws \Exception
+	 */
+	protected function parseTransactionSplit(&$elements, $transaction)
+	{
+		$split = new TransactionSplit($transaction);
+		while($element = array_shift($elements)) {
+			if ($element['type'] === 'complete' && $element['tag'] === 'split:id') {
+				$split->id = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:reconciled-state') {
+				$split->reconciledState = $element['value'];
+			} elseif ($element['type'] === 'open' && $element['tag'] === 'split:reconcile-date') {
+				$split->reconciledDate = $this->parseDate($elements);
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:value') {
+				$split->value = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:quantity') {
+				$split->quantity = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:account') { // TODO check type="guid"
+				$split->account = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:memo') {
+				$split->memo = $element['value'];
+			} elseif ($element['type'] === 'complete' && $element['tag'] === 'split:action') {
+				$split->account = $element['value'];
+			} elseif ($element['type'] === 'close') {
+				return $split;
 			} else {
 				throw new \Exception('Unexpected xml tag: ' . print_r($element, true));
 			}
@@ -259,5 +369,88 @@ class GnuCash
 			}
 		}
 		throw new \Exception('Unexpected end of xml file.');
+	}
+
+	protected function postProcess()
+	{
+		foreach($this->books as $book) {
+			foreach($book->accounts as $account) {
+				if (!$account->isRoot()) {
+					if (isset($book->accounts[$account->parent])) {
+						$account->parent = $book->accounts[$account->parent];
+					} else {
+						throw new \Exception('Account not found: ' . $account->parent);
+					}
+					if ($account->commodity === null) {
+						throw new \Exception('Account without commodity: ' . $account->id);
+					}
+					$account->commodity = $this->getCurrency($account->commodity);
+				}
+			}
+			foreach($book->transactions as $transaction) {
+				foreach($transaction->splits as $split) {
+					if (isset($book->accounts[$split->account])) {
+						$book->accounts[$split->account]->transactionSplits[$split->id] = $split;
+						$split->account = $book->accounts[$split->account];
+					} else {
+						throw new \Exception('Account not found: ' . $split->account);
+					}
+					$transaction->currency = $this->getCurrency($transaction->currency);
+					$split->quantity = $this->string2money($split->quantity, $transaction->currency);
+					$split->value = $this->string2money($split->value, $transaction->currency);
+				}
+			}
+		}
+	}
+
+	/**
+	 * @param $value
+	 * @param Currency $currency
+	 * @return Money
+	 * @throws \Exception
+	 */
+	protected function string2money($value, $currency)
+	{
+		$parts = explode('/', $value);
+		if (!preg_match('/^-?[0-9]+$/', $parts[0])) {
+			throw new \Exception('Illegal currency value: ' . $value . ' for currency ' . $currency);
+		}
+		if (isset($parts[1])) {
+			$div = (int) $parts[1];
+			if ($div === $currency->getSubUnit()) {
+				$moneyValue = (int) $parts[0];
+			} elseif ($div < $currency->getSubUnit()) {
+				$moneyValue = ((int) $parts[0]) * $currency->getSubUnit() / $div;
+				if (!is_int($moneyValue)) {
+					throw new \Exception('Illegal currency value: ' . $value . ' for currency ' . $currency . '. Value conversion resulted in a float value');
+				}
+			} else {
+				throw new \Exception('Unknown currency value: ' . $value . ' for currency ' . $currency);
+			}
+		} else {
+			throw new \Exception('Unknown currency value: ' . $value . ' for currency ' . $currency);
+		}
+		return new Money($moneyValue, $currency);
+	}
+
+	/**
+	 * @param string $code
+	 * @return Currency
+	 */
+	protected function getCurrency($code)
+	{
+		if ($code === null) {
+			return null;
+		} elseif ($code instanceof Currency) {
+			return $code;
+		}
+		if (isset($this->_currencies[$code])) {
+			return $this->_currencies[$code];
+		}
+		try {
+			return $this->_currencies[$code] = new Currency($code);
+		} catch (\Exception $e) {
+			throw new \Exception("Unknown currency: '$code'.", $e->getCode(), $e);
+		}
 	}
 }

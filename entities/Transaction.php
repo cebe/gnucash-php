@@ -17,6 +17,10 @@ class Transaction
 	public $dateEntered;
 	public $description;
 
+	/**
+	 * @var TransactionSplit[]
+	 */
+	public $splits = array();
 
 	protected $book;
 

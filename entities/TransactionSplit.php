@@ -11,18 +11,19 @@ namespace cebe\gnucash\entities;
 class TransactionSplit
 {
 	public $id;
-	public $currency;
-	public $num;
-	public $datePosted;
-	public $dateEntered;
-	public $description;
+	public $reconciledState;
+	public $reconciledDate;
+	public $value;
+	public $quantity;
+	public $account;
+	public $memo;
+	public $action;
 
+	protected $transaction;
 
-	protected $book;
-
-	public function __construct($book)
+	public function __construct($transaction)
 	{
-		$this->book = $book;
+		$this->transaction = $transaction;
 	}
 
 
